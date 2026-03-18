@@ -9,7 +9,7 @@ with open("README.md", encoding="utf-8") as f:
 
 setup(
     name="cine_aalst_cli",
-    version="0.1.0",
+    version="0.2.0",
     author="vdmkenny",
     description="View movie schedules for Ciné Aalst",
     long_description=long_description,
@@ -18,7 +18,8 @@ setup(
     packages=find_packages(),
     install_requires=[
         "requests",
-        "argparse",
+        "beautifulsoup4",
+        "lxml",
     ],
     entry_points={
         "console_scripts": [
