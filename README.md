@@ -12,21 +12,21 @@ This tool is not affiliated with Cine Aalst cinema in any way. The tool scrapes 
 
 The tool is intended for personal use only, and the author does not take any responsibility for any misuse of the tool.
 
-
 ## Features
 
 - View movie schedules for today, tomorrow, or a specific date.
 - Search for movies by title.
-- Get detailed information about a specific movie.
+- Get detailed information when searching by title (director, actors, release date, trailer link).
+- Clickable terminal hyperlinks for tickets, posters and trailers.
+- Color-coded output with language tags (OV/NV), labels (Nieuw, Verwacht, Laatste kans) and formatted schedules.
 
-Missing feature: Search for Special Events.
+## Requirements
+
+- Python 3.11 or newer
 
 ## Installation
 
-1. Install dependencies:
-
 ```bash
-# Python 3 and pip are required
 pip install -r requirements.txt
 ```
 
@@ -35,26 +35,28 @@ pip install -r requirements.txt
 Options:
 
 - `-d, --date [DATE]`: Specify the date for which to get movie schedules (format: YYYY-MM-DD, 'today', or 'tomorrow').
-- `-m, --movie [TITLE]`: Search for a movie by title.
+- `-m, --movie [TITLE]`: Search for a movie by title. When used, extra details (director, actors, trailer) are fetched.
 
 These options can be combined.
 
 ## Examples
 
 ```bash
+# Show all movies and schedules
+python cine_aalst.py
+
 # Show movie schedules for today
 python cine_aalst.py -d today
 
 # Show movie schedules for tomorrow
 python cine_aalst.py -d tomorrow
 
-# Show movie schedules for a specific date (Schedules are available for the next 7 days or so)
-python cine_aalst.py -d 2024-04-12
+# Show movie schedules for a specific date
+python cine_aalst.py -d 2026-03-21
 
-# Search for a movie by title (Partial matches are also supported)
-python cine_aalst.py -m "Kung Fu Panda"
+# Search for a movie by title (partial matches supported)
+python cine_aalst.py -m "Mario"
 
 # Search for a specific movie on a specific date
-python cine_aalst.py -d 2024-04-12 -m "Kung Fu Panda"
-
+python cine_aalst.py -d today -m "Mario"
 ```
