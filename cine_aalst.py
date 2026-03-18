@@ -6,9 +6,9 @@ displays movie info with showtimes in the terminal.
 """
 
 import argparse
-import locale
 import re
 import sys
+import textwrap
 from datetime import datetime, timedelta
 
 import requests
@@ -201,6 +201,65 @@ def _parse_schedule_block(week_block):
     return schedule
 
 
+def _parse_film_id_and_poster(block):
+    """
+    Extract film ID, filminfo URL, tickets URL and poster URL from a movie block.
+
+    Returns a dict with keys: id, filminfo_url, tickets_url, poster_url.
+    """
+    result = {"id": None, "filminfo_url": "", "tickets_url": "", "poster_url": ""}
+    link = block.find("a", href=re.compile(r"/filminfo/\d+"))
+    if not link:
+        return result
+
+    href = link.get("href", "")
+    match = re.search(r"/filminfo/(\d+)", href)
+    if match:
+        result["id"] = match.group(1)
+        result["filminfo_url"] = f"{BASE_URL}{href}"
+        result["tickets_url"] = f"{TICKETS_URL}/{result['id']}"
+
+    img = link.find("img")
+    if img:
+        result["poster_url"] = img.get("src", "")
+
+    return result
+
+
+def _parse_heading(block):
+    """
+    Extract title, language and runtime from the <h3> inside a movie block.
+
+    Returns a dict with keys: title, language, runtime.
+    """
+    result = {"title": "", "language": "", "runtime": ""}
+    h3 = block.find("h3")
+    if not h3:
+        return result
+
+    # Title = direct text nodes of <h3>, excluding child spans
+    title_parts = [
+        child.strip()
+        for child in h3.children
+        if isinstance(child, str) and child.strip()
+    ]
+    result["title"] = " ".join(title_parts).strip()
+
+    # Language badge (OV / NV)
+    lang_badge = h3.find("span", class_="badge")
+    if lang_badge:
+        result["language"] = lang_badge.get_text(strip=True)
+
+    # Runtime — first span containing "min" that is not a badge
+    for span in h3.find_all("span"):
+        span_text = span.get_text(strip=True)
+        if "min" in span_text.lower() and "badge" not in (span.get("class") or []):
+            result["runtime"] = span_text
+            break
+
+    return result
+
+
 def _parse_movie_block(block):
     """
     Parse a single movie-tabs row div into a movie dict.
@@ -209,80 +268,22 @@ def _parse_movie_block(block):
         id, title, genre, language, runtime, description, poster_url,
         label, schedule, filminfo_url, tickets_url
     """
-    movie = {
-        "id": None,
-        "title": "",
-        "genre": "",
-        "language": "",
-        "runtime": "",
-        "description": "",
-        "poster_url": "",
-        "label": "",
-        "schedule": [],
-        "filminfo_url": "",
-        "tickets_url": "",
-    }
+    ids = _parse_film_id_and_poster(block)
+    heading = _parse_heading(block)
 
-    # --- Film ID & poster ---
-    poster_link = block.find("a", href=re.compile(r"/filminfo/\d+"))
-    if poster_link:
-        href = poster_link.get("href", "")
-        match = re.search(r"/filminfo/(\d+)", href)
-        if match:
-            movie["id"] = match.group(1)
-            movie["filminfo_url"] = f"{BASE_URL}{href}"
-            movie["tickets_url"] = f"{TICKETS_URL}/{movie['id']}"
-
-        img = poster_link.find("img")
-        if img:
-            movie["poster_url"] = img.get("src", "")
-
-    # --- Label (e.g. "Nieuw") ---
     label_el = block.find("span", class_="movie-label")
-    if label_el:
-        movie["label"] = label_el.get_text(strip=True)
-
-    # --- Genre ---
     genre_el = block.find("span", class_="title")
-    if genre_el:
-        movie["genre"] = genre_el.get_text(strip=True)
-
-    # --- Title, language, runtime from <h3> ---
-    h3 = block.find("h3")
-    if h3:
-        # The title is the direct text of <h3>, excluding child spans
-        # We need to extract text that is NOT inside a <span>
-        title_parts = []
-        for child in h3.children:
-            if isinstance(child, str):
-                text = child.strip()
-                if text:
-                    title_parts.append(text)
-        movie["title"] = " ".join(title_parts).strip()
-
-        # Language badge (OV / NV)
-        lang_badge = h3.find("span", class_="badge")
-        if lang_badge:
-            movie["language"] = lang_badge.get_text(strip=True)
-
-        # Runtime - look for a span that contains "min"
-        for span in h3.find_all("span"):
-            span_text = span.get_text(strip=True)
-            if "min" in span_text.lower() and "badge" not in (span.get("class") or []):
-                movie["runtime"] = span_text
-                break
-
-    # --- Description ---
     desc_el = block.find("p")
-    if desc_el:
-        movie["description"] = desc_el.get_text(strip=True)
-
-    # --- Schedule ---
     week_block = block.find("div", class_="week-block")
-    if week_block:
-        movie["schedule"] = _parse_schedule_block(week_block)
 
-    return movie
+    return {
+        **ids,
+        **heading,
+        "genre": genre_el.get_text(strip=True) if genre_el else "",
+        "label": label_el.get_text(strip=True) if label_el else "",
+        "description": desc_el.get_text(strip=True) if desc_el else "",
+        "schedule": _parse_schedule_block(week_block) if week_block else [],
+    }
 
 
 def fetch_programme():
@@ -325,6 +326,70 @@ def fetch_programme():
 # ---------------------------------------------------------------------------
 
 
+def _parse_info_list(soup):
+    """
+    Extract director, actors and release date from a filminfo page's <ul class="movie-info">.
+
+    Returns a dict with keys: director, actors, release_date.
+    """
+    result = {"director": "", "actors": "", "release_date": ""}
+    info_list = soup.find("ul", class_="movie-info")
+    if not info_list:
+        return result
+
+    label_key_map = {"regie": "director", "acteur": "actors", "release": "release_date"}
+
+    for li in info_list.find_all("li"):
+        label_el = li.find("i")
+        if not label_el:
+            continue
+        label = label_el.get_text(strip=True).lower()
+        value = li.get_text(strip=True)[len(label_el.get_text(strip=True)) :].strip()
+
+        for keyword, key in label_key_map.items():
+            if keyword in label:
+                result[key] = value
+                break
+
+    return result
+
+
+def _parse_full_description(soup):
+    """
+    Extract the full synopsis text from a filminfo page.
+
+    Returns the description string (may be empty).
+    """
+    single_movie = soup.find("div", class_="single-movie")
+    if not single_movie:
+        return ""
+
+    col7 = single_movie.find("div", class_="col-sm-7")
+    if not col7:
+        return ""
+
+    target = col7.find("div", class_="col-sm-7") or col7
+    text_parts = [
+        child.strip()
+        for child in target.children
+        if isinstance(child, str) and child.strip()
+    ]
+    return " ".join(text_parts)
+
+
+def _parse_trailer_url(soup):
+    """
+    Extract the YouTube trailer URL from a filminfo page.
+
+    Returns the URL string (may be empty).
+    """
+    trailer_tile = soup.find("div", class_="trailer-tile")
+    if not trailer_tile:
+        return ""
+    yt_id = trailer_tile.get("data-yt", "")
+    return f"https://www.youtube.com/watch?v={yt_id}" if yt_id else ""
+
+
 def fetch_film_details(film_id):
     """
     Fetch extra details from /filminfo/{id}.
@@ -338,62 +403,12 @@ def fetch_film_details(film_id):
     except SystemExit:
         return None
 
-    details = {
-        "director": "",
-        "actors": "",
-        "release_date": "",
-        "trailer_url": "",
-        "full_description": "",
+    info = _parse_info_list(soup)
+    return {
+        **info,
+        "full_description": _parse_full_description(soup),
+        "trailer_url": _parse_trailer_url(soup),
     }
-
-    # --- Movie info list ---
-    info_list = soup.find("ul", class_="movie-info")
-    if info_list:
-        for li in info_list.find_all("li"):
-            label_el = li.find("i")
-            if not label_el:
-                continue
-            label = label_el.get_text(strip=True).lower()
-            # The value is the text after the <i> element
-            value = li.get_text(strip=True)
-            # Remove the label prefix from the value
-            value = value[len(label_el.get_text(strip=True)) :].strip()
-
-            if "regie" in label:
-                details["director"] = value
-            elif "acteur" in label:
-                details["actors"] = value
-            elif "release" in label:
-                details["release_date"] = value
-            elif "duur" in label:
-                pass  # We already have runtime from the programme page
-
-    # --- Full description ---
-    single_movie = soup.find("div", class_="single-movie")
-    if single_movie:
-        # Description is in a col-sm-7 div, as direct text (not in a tag)
-        col7 = single_movie.find("div", class_="col-sm-7")
-        if col7:
-            inner_col7 = col7.find("div", class_="col-sm-7")
-            target = inner_col7 if inner_col7 else col7
-            # Collect text nodes that are direct children (the synopsis text)
-            text_parts = []
-            for child in target.children:
-                if isinstance(child, str):
-                    text = child.strip()
-                    if text:
-                        text_parts.append(text)
-            if text_parts:
-                details["full_description"] = " ".join(text_parts)
-
-    # --- Trailer (YouTube) ---
-    trailer_tile = soup.find("div", class_="trailer-tile")
-    if trailer_tile:
-        yt_id = trailer_tile.get("data-yt", "")
-        if yt_id:
-            details["trailer_url"] = f"https://www.youtube.com/watch?v={yt_id}"
-
-    return details
 
 
 # ---------------------------------------------------------------------------
@@ -509,8 +524,6 @@ def _wrap_text(text, width=80, indent=4):
     """
     Wrap long text to *width* columns, with *indent* spaces on continuation lines.
     """
-    import textwrap
-
     prefix = " " * indent
     lines = textwrap.wrap(text, width=width - indent)
     if not lines:
@@ -519,28 +532,8 @@ def _wrap_text(text, width=80, indent=4):
     return ("\n" + prefix).join(lines)
 
 
-def print_movie(movie, show_details=False):
-    """
-    Print a single movie with its schedule to the terminal.
-    """
-    # --- Title line ---
-    title = movie["title"]
-    lang = _lang_tag(movie.get("language", ""))
-    runtime = f"  {_DIM}{movie['runtime']}{_RESET}" if movie.get("runtime") else ""
-    label = _label_tag(movie.get("label", ""))
-
-    print(f"{_BOLD}{_FG_BRIGHT_BLUE}{title}{_RESET}{lang}{runtime}{label}")
-
-    # --- Genre ---
-    if movie["genre"]:
-        print(_section("Genre", f"{_ITALIC}{movie['genre']}{_RESET}"))
-
-    # --- Description ---
-    if movie["description"]:
-        wrapped = _wrap_text(movie["description"])
-        print(_section("Description", wrapped))
-
-    # --- Links row (poster + more info on one line) ---
+def _print_links(movie):
+    """Print the links row (poster + more info) for a movie."""
     links = []
     if movie.get("poster_url"):
         links.append(_hyperlink(movie["poster_url"], f"{_UNDERLINE}Poster{_RESET}"))
@@ -551,64 +544,83 @@ def print_movie(movie, show_details=False):
     if links:
         print(f"  {_DIM}Links:{_RESET} {f'{_DIM} | {_RESET}'.join(links)}")
 
-    # --- Extra details (only when searching by title) ---
-    if show_details and movie.get("details"):
-        d = movie["details"]
-        if d.get("director"):
-            print(_section("Director", d["director"]))
-        if d.get("actors"):
-            print(_section("Actors", d["actors"]))
-        if d.get("release_date"):
-            print(_section("Release", d["release_date"]))
-        if d.get("trailer_url"):
-            print(
-                _section(
-                    "Trailer",
-                    _hyperlink(d["trailer_url"], f"{_UNDERLINE}YouTube{_RESET}"),
-                )
+
+def _print_details(movie):
+    """Print extra filminfo details (director, actors, release, trailer, synopsis)."""
+    details = movie.get("details")
+    if not details:
+        return
+
+    for label, key in (
+        ("Director", "director"),
+        ("Actors", "actors"),
+        ("Release", "release_date"),
+    ):
+        if details.get(key):
+            print(_section(label, details[key]))
+
+    if details.get("trailer_url"):
+        print(
+            _section(
+                "Trailer",
+                _hyperlink(details["trailer_url"], f"{_UNDERLINE}YouTube{_RESET}"),
             )
-        if d.get("full_description") and d["full_description"] != movie.get(
-            "description", ""
-        ):
-            wrapped = _wrap_text(d["full_description"])
-            print(_section("Synopsis", wrapped))
+        )
 
-    # --- Schedule table ---
-    if movie["schedule"]:
-        print(f"  {_DIM}Schedule:{_RESET}")
-        for entry in movie["schedule"]:
-            day_str = entry["date_label"]
-            for screening in entry["screenings"]:
-                time_str = screening["time"]
-                loc = screening["location"]
-                zaal = screening["zaal"]
-                ticket = screening["ticket_url"]
+    full_desc = details.get("full_description", "")
+    if full_desc and full_desc != movie.get("description", ""):
+        print(_section("Synopsis", _wrap_text(full_desc)))
 
-                # Time: bold + bright
-                time_display = f"{_BOLD}{time_str}{_RESET}"
 
-                # Location info: dimmed
-                loc_parts = []
-                if zaal:
-                    loc_parts.append(zaal)
-                if loc:
-                    loc_parts.append(loc)
-                loc_info = (
-                    f"  {_DIM}{' - '.join(loc_parts)}{_RESET}" if loc_parts else ""
-                )
+def _format_screening_line(day_str, screening):
+    """Format a single screening as a terminal line string."""
+    time_display = f"{_BOLD}{screening['time']}{_RESET}"
 
-                # Ticket link
-                ticket_link = (
-                    f"  {_hyperlink(ticket, f'{_FG_YELLOW}Tickets{_RESET}')}"
-                    if ticket
-                    else ""
-                )
+    loc_parts = [p for p in (screening["zaal"], screening["location"]) if p]
+    loc_info = f"  {_DIM}{' - '.join(loc_parts)}{_RESET}" if loc_parts else ""
 
-                print(
-                    f"    {_FG_BRIGHT_BLACK}{day_str:<12}{_RESET}"
-                    f"{time_display}{loc_info}{ticket_link}"
-                )
+    ticket = screening["ticket_url"]
+    ticket_link = (
+        f"  {_hyperlink(ticket, f'{_FG_YELLOW}Tickets{_RESET}')}" if ticket else ""
+    )
 
+    return (
+        f"    {_FG_BRIGHT_BLACK}{day_str:<12}{_RESET}"
+        f"{time_display}{loc_info}{ticket_link}"
+    )
+
+
+def _print_schedule(schedule):
+    """Print the schedule table for a movie."""
+    if not schedule:
+        return
+    print(f"  {_DIM}Schedule:{_RESET}")
+    for entry in schedule:
+        for screening in entry["screenings"]:
+            print(_format_screening_line(entry["date_label"], screening))
+
+
+def print_movie(movie, show_details=False):
+    """
+    Print a single movie with its schedule to the terminal.
+    """
+    lang = _lang_tag(movie.get("language", ""))
+    runtime = f"  {_DIM}{movie['runtime']}{_RESET}" if movie.get("runtime") else ""
+    label = _label_tag(movie.get("label", ""))
+
+    print(f"{_BOLD}{_FG_BRIGHT_BLUE}{movie['title']}{_RESET}{lang}{runtime}{label}")
+
+    if movie["genre"]:
+        print(_section("Genre", f"{_ITALIC}{movie['genre']}{_RESET}"))
+    if movie["description"]:
+        print(_section("Description", _wrap_text(movie["description"])))
+
+    _print_links(movie)
+
+    if show_details:
+        _print_details(movie)
+
+    _print_schedule(movie["schedule"])
     print()
 
 
